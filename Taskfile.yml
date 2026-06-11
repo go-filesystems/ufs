@@ -1,0 +1,30 @@
+version: '3'
+
+# This Taskfile runs the same way inside the monorepo (where
+# `go.work` at the repo root resolves the module locally) and inside
+# the standalone repository (where no `go.work` exists and Go falls
+# back to the module proxy).
+
+tasks:
+  build:
+    desc: "Build the module"
+    cmds:
+      - go build ./...
+
+  test:
+    desc: "Run tests with race + coverage"
+    cmds:
+      - go test -race -coverprofile=cover.out ./...
+      - go tool cover -func=cover.out | tail -1
+
+  lint:
+    desc: "Vet the module"
+    cmds:
+      - go vet ./...
+
+  ci:
+    desc: "Run lint + build + test (used by the GitHub Actions workflow)"
+    cmds:
+      - task: lint
+      - task: build
+      - task: test
