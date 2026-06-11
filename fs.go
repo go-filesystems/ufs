@@ -21,9 +21,14 @@ import (
 // (the only environment a read-only client cares about).
 type FS struct {
 	rs     io.ReaderAt
+	wa     io.WriterAt // optional; non-nil only when opened via OpenRW or Mkfs
 	size   int64
 	sb     *Superblock
 	closer io.Closer // optional; nil when the caller supplied a bare ReaderAt
+
+	// alloc is the live cylinder-group allocator. nil for read-only
+	// handles; loaded by OpenRW / Mkfs.
+	alloc *allocator
 }
 
 // Verify the package satisfies the common filesystem interface.
@@ -151,32 +156,25 @@ func (fs *FS) ReadLink(path string) (string, error) {
 	return readSymlinkTarget(fs.rs, fs.sb, in)
 }
 
-// WriteFile is part of the filesystem.Filesystem contract; it
-// always fails with ErrReadOnly in this sprint.
-func (fs *FS) WriteFile(path string, data []byte, perm os.FileMode) error {
-	return ErrReadOnly
-}
-
-// MkDir is part of the filesystem.Filesystem contract; always fails
-// with ErrReadOnly.
-func (fs *FS) MkDir(path string, perm os.FileMode) error {
-	return ErrReadOnly
-}
-
-// DeleteFile is part of the filesystem.Filesystem contract; always
-// fails with ErrReadOnly.
-func (fs *FS) DeleteFile(path string) error {
-	return ErrReadOnly
-}
-
-// DeleteDir is part of the filesystem.Filesystem contract; always
-// fails with ErrReadOnly.
-func (fs *FS) DeleteDir(path string) error {
-	return ErrReadOnly
-}
-
-// Rename is part of the filesystem.Filesystem contract; always
-// fails with ErrReadOnly.
-func (fs *FS) Rename(oldPath, newPath string) error {
-	return ErrReadOnly
+// OpenRW parses the superblock at SblockUFS2 from `rs`, loads the
+// cylinder-group allocator, and wires the writer side through `wa`.
+// Use this when the caller wants both read and write access — e.g.
+// mutating an existing UFS2 image. The caller retains ownership of
+// the backing handle unless it satisfies io.Closer (in which case
+// Close will be forwarded).
+func OpenRW(rs io.ReaderAt, wa io.WriterAt, size int64) (*FS, error) {
+	sb, err := ReadSuperblock(rs)
+	if err != nil {
+		return nil, err
+	}
+	fs := &FS{rs: rs, wa: wa, size: size, sb: sb}
+	if c, ok := rs.(io.Closer); ok {
+		fs.closer = c
+	}
+	a, err := loadAllocator(fs)
+	if err != nil {
+		return nil, err
+	}
+	fs.alloc = a
+	return fs, nil
 }

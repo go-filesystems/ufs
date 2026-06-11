@@ -54,4 +54,20 @@ var (
 	// more than maxSymlinkHops symbolic links, indicating either a
 	// genuine cycle or a pathological tree.
 	ErrTooManyLinks = errors.New("ufs: too many symbolic link traversals")
+
+	// ErrNoSpace is returned when an allocation cannot find a free
+	// inode or block in any cylinder group.
+	ErrNoSpace = errors.New("ufs: no space left on device")
+
+	// ErrExists is returned when a mutating operation would overwrite
+	// an existing path (WriteFile/MkDir/Symlink/Rename target).
+	ErrExists = errors.New("ufs: path already exists")
+
+	// ErrNotEmpty is returned when DeleteDir is called on a directory
+	// that still contains entries other than "." and "..".
+	ErrNotEmpty = errors.New("ufs: directory not empty")
+
+	// ErrFileTooLarge is returned when a write would require
+	// double/triple indirect blocks the writer does not yet implement.
+	ErrFileTooLarge = errors.New("ufs: file too large for single-indirect")
 )

@@ -1,11 +1,13 @@
 # ufs
 
-Pure-Go, read-only driver for the FreeBSD UFS2 on-disk format.
+Pure-Go driver for the FreeBSD UFS2 on-disk format. Reads and writes
+both supported.
 
 ## Status
 
-Sprint 2A: read-only surface sufficient to satisfy FreeBSD's
-`loader.efi` against a UFS2 root partition.
+Sprint 2C-A: write surface + `Mkfs` entry point sufficient to
+construct a UFS2 partition entirely in-process for FreeBSD's
+`loader.efi` consumption.
 
 - No CGO.
 - No external tools.
@@ -26,17 +28,50 @@ Sprint 2A: read-only surface sufficient to satisfy FreeBSD's
 | Symlinks (spilled) | yes | Falls back to reading a data block when `di_blocks > 0`. |
 | Cycle protection | yes | `maxSymlinkHops = 32` before `ErrTooManyLinks`. |
 
-## Out of scope (sprint 2A)
+## Write support
 
-- Write support (`WriteFile`, `MkDir`, `DeleteFile`, `DeleteDir`,
-  `Rename` all return `ErrReadOnly`).
+Sprint 2C-A adds a coherent-image writer on top of the read-only
+surface from sprint 2A. The writer satisfies the same
+`filesystem.Filesystem` interface — `WriteFile`, `MkDir`,
+`DeleteFile`, `DeleteDir`, `Rename` — plus the optional `Symlinker`
+capability, and exposes a `Mkfs(w, sizeBytes)` entry point that
+formats a fresh UFS2 image into an empty backing store.
+
+Constructors:
+
+- `Open(rs, size)` — read-only handle.
+- `OpenRW(rs, wa, size)` — read + write on an existing image.
+- `Mkfs(rw, sizeBytes)` — fresh format; returns an `*FS` already
+  open for read+write.
+
+Operations are flushed coherently — each individual call leaves the
+on-disk image in a well-formed state (superblock + per-cg counters
++ inode bitmap + block bitmap all consistent). A crash mid-call
+leaves a fresh-but-potentially-leaky filesystem rather than a torn
+one.
+
+**Soft updates / journaling are deliberately absent.** The on-disk
+format does not require them — soft updates are a runtime
+optimisation. FreeBSD's `fsck_ufs` will recover any UFS2 image we
+produce on first mount. For our use case (producing a UFS2 boot
+partition in-process from `tamago-uefi`) that is the correct
+trade-off.
+
+### Out of scope (sprint 2C-A)
+
+- Double / triple indirect blocks. Files larger than ~2 MiB at the
+  default 4 KiB block size return `ErrFileTooLarge`. loader.efi
+  plus a FreeBSD `/boot/kernel` tree fits comfortably below this
+  limit.
+- Cluster summary updates (`fs_clustersumoff`). These are an
+  allocator-locality hint, not a correctness requirement.
+- Extended attributes (`di_extb` / `di_extsize`).
+- Snapshots, gjournal.
+
+### Out of scope (sprint 2A — still applies)
+
 - UFS1 (deferred to sprint 3 if needed for older NetBSD / OpenBSD).
-- Double / triple indirect blocks (loader.efi and FreeBSD kernel +
-  modules fit comfortably in direct + single indirect).
-- Extended attributes (`di_extb` / `di_extsize` block pointers).
-- Soft-updates journaling metadata (read-only doesn't care).
-- Checksums (UFS2 has optional metadata check hashes; we don't
-  verify them).
+- Metadata-checksum verification.
 
 ## Module
 
@@ -73,9 +108,25 @@ func main() {
 }
 ```
 
-`Open(rs io.ReaderAt, size int64)` is the lower-level constructor
-when the caller already owns a backing store (e.g. an EFI block-IO
-shim).
+`Open(rs io.ReaderAt, size int64)` is the lower-level read-only
+constructor when the caller already owns a backing store (e.g. an
+EFI block-IO shim). `OpenRW` adds the writer side; `Mkfs` formats
+a fresh image.
+
+Building a boot partition from scratch:
+
+```go
+img := make([]byte, 16*1024*1024)
+ba := newBackingArray(img) // any io.ReaderAt+io.WriterAt
+fs, err := ufs.Mkfs(ba, int64(len(img)))
+if err != nil {
+    log.Fatal(err)
+}
+_ = fs.MkDir("/boot", 0o755)
+_ = fs.MkDir("/boot/kernel", 0o755)
+_ = fs.WriteFile("/boot/loader.conf", []byte("kernel=\"kernel\"\n"), 0o644)
+_ = fs.WriteFile("/boot/kernel/kernel", kernelBytes, 0o755)
+```
 
 ## Errors
 
@@ -92,6 +143,11 @@ with `errors.Is`:
 - `ErrNotDirectory` / `ErrNotRegular` / `ErrNotSymlink` — type
   mismatch.
 - `ErrTooManyLinks` — symlink chain exceeded 32 hops.
+- `ErrNoSpace` — no free inode or block in any cylinder group.
+- `ErrExists` — write-side target path already exists.
+- `ErrNotEmpty` — `DeleteDir` on a non-empty directory.
+- `ErrFileTooLarge` — file would require double/triple indirect
+  blocks the writer does not implement.
 
 ## Tests
 
