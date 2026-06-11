@@ -1,13 +1,22 @@
 # ufs
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-filesystems/ufs.svg)](https://pkg.go.dev/github.com/go-filesystems/ufs)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/go-filesystems/ufs/actions/workflows/ci.yml/badge.svg)](https://github.com/go-filesystems/ufs/actions/workflows/ci.yml)
+
 Pure-Go driver for the FreeBSD UFS2 on-disk format. Reads and writes
-both supported.
+both supported, with `Mkfs` to format a fresh image from scratch.
 
 ## Status
 
-Sprint 2C-A: write surface + `Mkfs` entry point sufficient to
-construct a UFS2 partition entirely in-process for FreeBSD's
-`loader.efi` consumption.
+Through sprint 2D: read + write + `Mkfs` + double-indirect on top of
+the read-only surface from sprint 2A. Cross-validated against three
+parallel UFS2 sources (pure-Go `Mkfs`, real FreeBSD `raw.xz`
+extraction, docker oracle). Used by
+[`cloud-boot/tamago-uefi`](https://github.com/cloud-boot/tamago-uefi)
+Phase 3 to build the in-memory UFS2 partition consumed by FreeBSD's
+`loader.efi` over Go-side `EFI_BLOCK_IO_PROTOCOL` +
+`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` shims.
 
 - No CGO.
 - No external tools.
