@@ -58,12 +58,83 @@ const (
 	sbOffOldCpg     = 68
 )
 
+// MkfsOptions controls the geometry of a freshly-minted UFS2
+// filesystem. All fields are optional; zero values are replaced with
+// sprint-2C-A-compatible defaults (4 KiB block, 4 KiB fragment, one
+// inode per 4 KiB). Sprint 2D introduced this struct so callers that
+// need to store ≥ 2 MiB files can dial the block size up to 32 KiB
+// (matching FreeBSD newfs(8)) — extending single-indirect reach to
+// 16 MiB and engaging double-indirect (8 GiB) on top.
+type MkfsOptions struct {
+	// BlockSize is the filesystem block size in bytes. Must be a
+	// power of two in [4096, 65536]. Default 4096; FreeBSD newfs
+	// defaults to 32768 on devices ≥ 2 GiB and the cloud-boot live
+	// pipeline uses 32768 so the 29 MiB FreeBSD kernel fits via
+	// double-indirect.
+	BlockSize int
+	// FragmentSize is the per-fragment size in bytes. Must divide
+	// BlockSize evenly. Default = BlockSize / 8 (matching FreeBSD
+	// newfs(8)); pass an explicit equal-to-BlockSize value to force
+	// frag == 1 (no sub-block allocation).
+	FragmentSize int
+	// InodeDensity is the per-inode byte budget — i.e. one inode is
+	// reserved per InodeDensity bytes of data area. Default 4096.
+	InodeDensity int
+	// Label is reserved for future use; currently ignored.
+	Label string
+}
+
+// resolveOptions fills zero fields of opts with sprint-2D defaults
+// chosen to mirror FreeBSD newfs(8) at BlockSize == 32768 and
+// sprint-2C-A defaults at BlockSize == 4096. Returns an error if a
+// non-zero field is out of range so callers get a clear diagnostic
+// rather than a corrupted filesystem.
+func resolveOptions(opts MkfsOptions, legacy bool) (MkfsOptions, error) {
+	if opts.BlockSize == 0 {
+		if legacy {
+			opts.BlockSize = defaultBsize
+		} else {
+			opts.BlockSize = 4096
+		}
+	}
+	if opts.BlockSize < 4096 || opts.BlockSize > 65536 {
+		return opts, fmt.Errorf("ufs: BlockSize %d out of range [4096,65536]", opts.BlockSize)
+	}
+	if opts.BlockSize&(opts.BlockSize-1) != 0 {
+		return opts, fmt.Errorf("ufs: BlockSize %d not power of two", opts.BlockSize)
+	}
+	if opts.FragmentSize == 0 {
+		if legacy {
+			// sprint-2C-A default kept frag == 1 (Fsize == Bsize).
+			opts.FragmentSize = opts.BlockSize
+		} else {
+			opts.FragmentSize = opts.BlockSize / 8
+		}
+	}
+	if opts.FragmentSize <= 0 || opts.FragmentSize > opts.BlockSize {
+		return opts, fmt.Errorf("ufs: FragmentSize %d invalid", opts.FragmentSize)
+	}
+	if opts.BlockSize%opts.FragmentSize != 0 {
+		return opts, fmt.Errorf("ufs: FragmentSize %d does not divide BlockSize %d", opts.FragmentSize, opts.BlockSize)
+	}
+	if opts.FragmentSize&(opts.FragmentSize-1) != 0 {
+		return opts, fmt.Errorf("ufs: FragmentSize %d not power of two", opts.FragmentSize)
+	}
+	if opts.InodeDensity == 0 {
+		opts.InodeDensity = defaultInodeBytes
+	}
+	if opts.InodeDensity < int(InodeSize) {
+		return opts, fmt.Errorf("ufs: InodeDensity %d below %d (one inode per inode-size)", opts.InodeDensity, InodeSize)
+	}
+	return opts, nil
+}
+
 // Mkfs writes a fresh UFS2 filesystem onto a backing ReadWriterAt
 // with the given byte-size geometry. The returned *FS is open for
-// read+write. We mirror FreeBSD newfs(8) defaults: 4 KiB block, 4 KiB
-// fragment, one cylinder group per 1 MiB. For larger callers we still
-// honour the same defaults — bumping the block to 32 KiB is a future
-// optimisation, not a correctness requirement.
+// read+write. The legacy sprint-2C-A defaults (4 KiB block, 4 KiB
+// fragment, single-indirect reach) are preserved for backward
+// compatibility; callers that need the 29 MiB-kernel double-indirect
+// surface should use MkfsWith with BlockSize=32768.
 //
 // Layout per cylinder group (offsets in fragments):
 //
@@ -78,25 +149,56 @@ func Mkfs(w interface {
 	io.ReaderAt
 	io.WriterAt
 }, sizeBytes int64) (*FS, error) {
+	return mkfsWithLegacy(w, sizeBytes, MkfsOptions{}, true)
+}
+
+// MkfsWith is the explicit-options form of Mkfs. Callers pass an
+// MkfsOptions to dial BlockSize / FragmentSize / inode density. Zero
+// fields fall back to FreeBSD newfs(8) defaults (BlockSize 4096
+// canonical default — pass 32768 to match a typical real-world
+// FreeBSD root partition).
+func MkfsWith(w interface {
+	io.ReaderAt
+	io.WriterAt
+}, sizeBytes int64, opts MkfsOptions) (*FS, error) {
+	return mkfsWithLegacy(w, sizeBytes, opts, false)
+}
+
+func mkfsWithLegacy(w interface {
+	io.ReaderAt
+	io.WriterAt
+}, sizeBytes int64, opts MkfsOptions, legacy bool) (*FS, error) {
 	if sizeBytes < 1<<20 {
 		return nil, fmt.Errorf("ufs: Mkfs needs at least 1 MiB, got %d", sizeBytes)
 	}
-	bsize := int32(defaultBsize)
-	fsize := int32(defaultFsize)
+	opts, err := resolveOptions(opts, legacy)
+	if err != nil {
+		return nil, err
+	}
+	bsize := int32(opts.BlockSize)
+	fsize := int32(opts.FragmentSize)
 	frag := bsize / fsize
 	bshift := int32(log2(uint32(bsize)))
 	fshift := int32(log2(uint32(fsize)))
 	inopb := uint32(bsize) / InodeSize
 	fsbtodb := int32(log2(uint32(fsize) / 512))
 
+	// Cylinder-group sizing scales with BlockSize: a 1 MiB cg is the
+	// sprint-2C-A heritage default and works fine at bsize=4096; at
+	// bsize=32768 the cg metadata itself nearly fills 1 MiB once the
+	// inode table is sized for "1 inode per 4 KiB". Scale the cg
+	// target up to keep the data:metadata ratio sane.
 	cgSize := int64(defaultCgSize)
+	if int64(bsize) > cgSize/16 {
+		cgSize = int64(bsize) * 256 // e.g. 32768 * 256 = 8 MiB per cg
+	}
 	if cgSize > sizeBytes {
 		cgSize = sizeBytes
 	}
 	fpg := int32(cgSize / int64(fsize))
 	// Inodes per group: cap so the inode table fits in a couple of
-	// blocks. We aim for one inode per defaultInodeBytes of data.
-	ipg := uint32(int64(fpg) * int64(fsize) / int64(defaultInodeBytes))
+	// blocks. We aim for one inode per opts.InodeDensity bytes of data.
+	ipg := uint32(int64(fpg) * int64(fsize) / int64(opts.InodeDensity))
 	if ipg < inopb {
 		ipg = inopb
 	}

@@ -89,7 +89,27 @@ func blockForLBN(rs io.ReaderAt, sb *Superblock, in *Inode, lbn int64) (uint64, 
 		idx := rel
 		return readIndirectEntry(rs, sb, in.Indirect[0], idx)
 	}
-	// Double / triple indirection out of scope for sprint 2A.
+	rel -= nindir
+	// Double-indirect: in.Indirect[1] points at a block of nindir
+	// uint64 pointers, each of which points at a single-indirect
+	// block of nindir entries. Total reach = nindir² × bsize.
+	if rel < nindir*nindir {
+		if in.Indirect[1] == 0 {
+			return 0, nil
+		}
+		outerIdx := rel / nindir
+		innerIdx := rel % nindir
+		mid, err := readIndirectEntry(rs, sb, in.Indirect[1], outerIdx)
+		if err != nil {
+			return 0, err
+		}
+		if mid == 0 {
+			return 0, nil
+		}
+		return readIndirectEntry(rs, sb, mid, innerIdx)
+	}
+	// Triple-indirect intentionally not implemented: nindir³ × bsize
+	// = 1 PiB at bsize=32768; sprint 2D doesn't need it.
 	return 0, ErrUnsupportedIndirect
 }
 

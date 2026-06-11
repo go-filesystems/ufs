@@ -201,16 +201,24 @@ func TestDeleteDir_TargetIsFile(t *testing.T) {
 }
 
 func TestWriteFile_TooLarge(t *testing.T) {
+	// Sprint 2D writer reach: NumDirect + Nindir + Nindir² blocks.
+	// At bsize=4096 / nindir=512 that's 262,668 blocks ≈ 1 GiB —
+	// allocating that much in RAM to drive the size guard would OOM
+	// CI. Instead we synthesise a freshly-Mkfs'd image and dial the
+	// nominal block reach down by mutating the superblock's Nindir
+	// to a tiny value AFTER Mkfs, so the cap fires at ~1 MiB.
 	const size = 16 * 1024 * 1024
 	img := newMemImage(size)
 	fs, err := Mkfs(img, size)
 	if err != nil {
 		t.Fatalf("Mkfs: %v", err)
 	}
-	// Single-indirect reach is NumDirect + Nindir = 12 + 512 = 524
-	// blocks at bsize=4096 → ~2 MiB. Anything beyond that exceeds our
-	// implementation's reach.
-	huge := bytesPattern(int(fs.Superblock().Bsize)*(NumDirect+int(fs.Superblock().Nindir)+1), 0)
+	// Spoof a tiny nindir so the writer's LBN cap = NumDirect +
+	// 4 + 4² = 32 blocks (128 KiB at bsize=4096). The on-disk
+	// indirect block is still bsize bytes; the cap is purely
+	// computed from sb.Nindir.
+	fs.Superblock().Nindir = 4
+	huge := make([]byte, int(fs.Superblock().Bsize)*(NumDirect+4+4*4+1))
 	if err := fs.WriteFile("/huge.bin", huge, 0o644); !errors.Is(err, ErrFileTooLarge) {
 		t.Errorf("err = %v, want ErrFileTooLarge", err)
 	}

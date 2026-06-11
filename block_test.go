@@ -120,20 +120,18 @@ func TestReadFileBody_SparseHole(t *testing.T) {
 	}
 }
 
-func TestReadFileBody_DoubleIndirectUnsupported(t *testing.T) {
+func TestReadFileBody_TripleIndirectUnsupported(t *testing.T) {
+	// Sprint 2D: single + double-indirect are now supported. Only the
+	// triple-indirect tier (nindir³ × bsize) remains intentionally
+	// unimplemented. We call blockForLBN directly with a high LBN to
+	// exercise the triple-indirect branch without driving a multi-GiB
+	// read through the byte slice.
 	img := buildFixture()
 	sb, _ := parseSuperblock(img[SblockUFS2 : SblockUFS2+1376])
-	// Synthetic inode whose size requires block index >= 12+nindir.
-	in := &Inode{
-		Mode: IFREG | 0o644,
-		Size: uint64(fxBsize) * uint64(NumDirect+fxNindir+1),
-	}
-	for i := 0; i < NumDirect; i++ {
-		in.Direct[i] = uint64(fragLoaderConf)
-	}
-	in.Indirect[0] = uint64(fragBigIndirect)
-	in.Indirect[1] = uint64(fragLoaderConf) // pretend double-indirect
-	_, err := ReadFileAll(bytes.NewReader(img), sb, in)
+	in := &Inode{Mode: IFREG | 0o644}
+	in.Indirect[2] = uint64(fragBigIndirect) // pretend triple-indirect
+	highLBN := int64(NumDirect + fxNindir + fxNindir*fxNindir + 1)
+	_, err := blockForLBN(bytes.NewReader(img), sb, in, highLBN)
 	if !errors.Is(err, ErrUnsupportedIndirect) {
 		t.Fatalf("err = %v, want ErrUnsupportedIndirect", err)
 	}

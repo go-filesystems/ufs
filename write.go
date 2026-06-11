@@ -99,14 +99,44 @@ func (fs *FS) writeFileData(in *Inode, data []byte) error {
 		in.Blocks = 0
 		return nil
 	}
-	// Cap at direct + single-indirect reach.
-	maxLBN := NumDirect + int(fs.sb.Nindir)
+	nindir := int(fs.sb.Nindir)
+	// Direct + single-indirect + double-indirect reach. Triple-
+	// indirect is intentionally unimplemented (1 PiB at bsize=32768).
+	maxLBN := NumDirect + nindir + nindir*nindir
 	totalBlocks := (len(data) + bsize - 1) / bsize
 	if totalBlocks > maxLBN {
-		return fmt.Errorf("%w: needs %d blocks", ErrFileTooLarge, totalBlocks)
+		return fmt.Errorf("%w: needs %d blocks (max %d for direct+single+double)",
+			ErrFileTooLarge, totalBlocks, maxLBN)
 	}
 
 	frag := int(fs.sb.Frag)
+	// Track auxiliary blocks (single + double indirect chain blocks)
+	// so di_blocks can be set accurately. Each one is a full bsize
+	// block.
+	auxBlocks := 0
+	// Cache the in-memory double-indirect tier-1 buffer so we can
+	// flush it once at the end instead of one writeAt per touched
+	// outer slot.
+	var doubleTier1 []byte // nil until needed; size = bsize
+	var doubleTier1Frag uint64
+	doubleTier1Dirty := false
+	// Single-indirect blocks held by tier-2 of the double-indirect
+	// chain — index by outer slot.
+	type tier2Buf struct {
+		frag uint64
+		buf  []byte
+	}
+	tier2 := make(map[int]*tier2Buf)
+
+	flushTier2 := func() error {
+		for _, t := range tier2 {
+			if _, err := fs.wa.WriteAt(t.buf, fs.sb.FragOffset(t.frag)); err != nil {
+				return fmt.Errorf("ufs: flush dindir tier-2: %w", err)
+			}
+		}
+		return nil
+	}
+
 	for lbn := 0; lbn < totalBlocks; lbn++ {
 		// Allocate a full block (frag fragments) per LBN.
 		fragNum, err := fs.alloc.allocBlock(frag)
@@ -129,38 +159,78 @@ func (fs *FS) writeFileData(in *Inode, data []byte) error {
 			in.Direct[lbn] = fragNum
 			continue
 		}
-		// Single-indirect: lazy-allocate the indirect block on first
-		// over-direct LBN.
-		if in.Indirect[0] == 0 {
+		rel := lbn - NumDirect
+		if rel < nindir {
+			// Single-indirect: lazy-allocate the indirect block on
+			// first over-direct LBN.
+			if in.Indirect[0] == 0 {
+				ind, err := fs.alloc.allocBlock(frag)
+				if err != nil {
+					return err
+				}
+				// Zero-fill the indirect block so unused slots read
+				// as 0 (sparse).
+				if _, err := fs.wa.WriteAt(make([]byte, bsize), fs.sb.FragOffset(ind)); err != nil {
+					return fmt.Errorf("ufs: zero indirect: %w", err)
+				}
+				in.Indirect[0] = ind
+				auxBlocks++
+			}
+			// Write one entry into the indirect block.
+			var entry [8]byte
+			binary.LittleEndian.PutUint64(entry[:], fragNum)
+			off := fs.sb.FragOffset(in.Indirect[0]) + int64(rel)*8
+			if _, err := fs.wa.WriteAt(entry[:], off); err != nil {
+				return fmt.Errorf("ufs: write indirect entry: %w", err)
+			}
+			continue
+		}
+		// Double-indirect tier: rel ∈ [nindir, nindir + nindir²).
+		direl := rel - nindir
+		outerIdx := direl / nindir
+		innerIdx := direl % nindir
+		// Tier-1 (the in.Indirect[1] block, holding nindir tier-2
+		// frag pointers) — lazy-allocate on first entry.
+		if in.Indirect[1] == 0 {
 			ind, err := fs.alloc.allocBlock(frag)
 			if err != nil {
 				return err
 			}
-			// Zero-fill the indirect block so unused slots read as 0
-			// (sparse).
-			if _, err := fs.wa.WriteAt(make([]byte, bsize), fs.sb.FragOffset(ind)); err != nil {
-				return fmt.Errorf("ufs: zero indirect: %w", err)
-			}
-			in.Indirect[0] = ind
+			in.Indirect[1] = ind
+			doubleTier1Frag = ind
+			doubleTier1 = make([]byte, bsize)
+			auxBlocks++
 		}
-		// Write one entry into the indirect block.
-		entryIdx := lbn - NumDirect
-		var entry [8]byte
-		binary.LittleEndian.PutUint64(entry[:], fragNum)
-		off := fs.sb.FragOffset(in.Indirect[0]) + int64(entryIdx)*8
-		if _, err := fs.wa.WriteAt(entry[:], off); err != nil {
-			return fmt.Errorf("ufs: write indirect entry: %w", err)
+		// Tier-2 buffer for this outerIdx — lazy-allocate.
+		t2, ok := tier2[outerIdx]
+		if !ok {
+			ind, err := fs.alloc.allocBlock(frag)
+			if err != nil {
+				return err
+			}
+			t2 = &tier2Buf{frag: ind, buf: make([]byte, bsize)}
+			tier2[outerIdx] = t2
+			auxBlocks++
+			// Record the new tier-2 frag in the tier-1 buffer.
+			binary.LittleEndian.PutUint64(doubleTier1[outerIdx*8:], ind)
+			doubleTier1Dirty = true
+		}
+		binary.LittleEndian.PutUint64(t2.buf[innerIdx*8:], fragNum)
+	}
+	// Flush the double-indirect chain in one pass (tier-2 then tier-1).
+	if err := flushTier2(); err != nil {
+		return err
+	}
+	if doubleTier1Dirty {
+		if _, err := fs.wa.WriteAt(doubleTier1, fs.sb.FragOffset(doubleTier1Frag)); err != nil {
+			return fmt.Errorf("ufs: flush dindir tier-1: %w", err)
 		}
 	}
 	in.Size = uint64(len(data))
 	// di_blocks counts 512-byte sectors. Every allocated full block is
-	// (bsize/512) sectors; the indirect block (if any) is also one
-	// full block.
+	// (bsize/512) sectors; same for every indirect-chain block.
 	sectorsPerBlock := uint64(bsize / 512)
-	in.Blocks = uint64(totalBlocks) * sectorsPerBlock
-	if totalBlocks > NumDirect {
-		in.Blocks += sectorsPerBlock
-	}
+	in.Blocks = uint64(totalBlocks+auxBlocks) * sectorsPerBlock
 	return nil
 }
 
@@ -176,9 +246,9 @@ func (fs *FS) freeFileBlocks(in *Inode) error {
 			in.Direct[i] = 0
 		}
 	}
+	bsize := int(fs.sb.Bsize)
 	if in.Indirect[0] != 0 {
 		// Walk the indirect block, freeing every non-zero entry.
-		bsize := int(fs.sb.Bsize)
 		buf := make([]byte, bsize)
 		if _, err := fs.rs.ReadAt(buf, fs.sb.FragOffset(in.Indirect[0])); err != nil {
 			return fmt.Errorf("ufs: read indirect for free: %w", err)
@@ -196,8 +266,43 @@ func (fs *FS) freeFileBlocks(in *Inode) error {
 		}
 		in.Indirect[0] = 0
 	}
-	// Indirect[1] and [2] are intentionally ignored — the writer
-	// doesn't allocate them, so they should always be zero on a
+	// Double-indirect chain (sprint 2D): in.Indirect[1] points at a
+	// block of tier-2 pointers, each of which is a single-indirect
+	// block. Walk tier-1, then each tier-2, freeing data blocks then
+	// the indirect blocks themselves.
+	if in.Indirect[1] != 0 {
+		tier1 := make([]byte, bsize)
+		if _, err := fs.rs.ReadAt(tier1, fs.sb.FragOffset(in.Indirect[1])); err != nil {
+			return fmt.Errorf("ufs: read dindir tier-1 for free: %w", err)
+		}
+		for off := 0; off+8 <= bsize; off += 8 {
+			t2Frag := binary.LittleEndian.Uint64(tier1[off:])
+			if t2Frag == 0 {
+				continue
+			}
+			tier2 := make([]byte, bsize)
+			if _, err := fs.rs.ReadAt(tier2, fs.sb.FragOffset(t2Frag)); err != nil {
+				return fmt.Errorf("ufs: read dindir tier-2 for free: %w", err)
+			}
+			for off2 := 0; off2+8 <= bsize; off2 += 8 {
+				ent := binary.LittleEndian.Uint64(tier2[off2:])
+				if ent != 0 {
+					if err := fs.alloc.freeBlock(ent, frag); err != nil {
+						return err
+					}
+				}
+			}
+			if err := fs.alloc.freeBlock(t2Frag, frag); err != nil {
+				return err
+			}
+		}
+		if err := fs.alloc.freeBlock(in.Indirect[1], frag); err != nil {
+			return err
+		}
+		in.Indirect[1] = 0
+	}
+	// Indirect[2] (triple-indirect) intentionally unsupported — the
+	// writer never allocates it, so it should always be zero on a
 	// file we created ourselves.
 	return nil
 }
