@@ -18,6 +18,11 @@ const (
 	// consults the primary.
 	SblockUFS2 = 65536
 
+	// SblockUFS1 is the byte offset of the primary UFS1 superblock on
+	// the backing device (SBLOCK_UFS1 in fs.h). UFS1 places its
+	// superblock 8 KiB into the partition, ahead of the UFS2 location.
+	SblockUFS1 = 8192
+
 	// SblockSize is the on-disk size reserved for the superblock
 	// region (8 KiB). The struct fs payload is ~1376 bytes; the rest
 	// is padding.
@@ -25,9 +30,7 @@ const (
 
 	// MagicUFS2 identifies a valid UFS2 superblock.
 	MagicUFS2 uint32 = 0x19540119
-	// MagicUFS1 identifies a UFS1 superblock. UFS1 is out of scope
-	// for sprint 2A; we expose the constant so Open can produce a
-	// useful diagnostic.
+	// MagicUFS1 identifies a UFS1 superblock.
 	MagicUFS1 uint32 = 0x00011954
 
 	// RootInode is the inode number of the filesystem root directory
@@ -35,8 +38,14 @@ const (
 	RootInode = 2
 
 	// InodeSize is the size of a UFS2 on-disk dinode in bytes
-	// (struct ufs2_dinode). UFS1 uses 128-byte inodes.
+	// (struct ufs2_dinode). It is also the inode density used by the
+	// UFS2-only Mkfs/write path.
 	InodeSize = 256
+
+	// UFS1InodeSize is the size of a UFS1 on-disk dinode in bytes
+	// (struct ufs1_dinode). UFS1 inodes are half the size of UFS2
+	// inodes and carry 32-bit block pointers.
+	UFS1InodeSize = 128
 
 	// NumDirect is the count of direct block pointers in a UFS2
 	// inode (UFS_NDADDR).
@@ -146,8 +155,34 @@ type Superblock struct {
 	// Maxfilesize is the largest representable file size.
 	Maxfilesize uint64
 
-	// Magic is FS_UFS2_MAGIC (0x19540119) for a valid UFS2 image.
+	// Magic is FS_UFS2_MAGIC (0x19540119) for a UFS2 image or
+	// FS_UFS1_MAGIC (0x00011954) for a UFS1 image.
 	Magic uint32
+
+	// IsUFS1 reports whether the image is in the UFS1 on-disk format.
+	// It drives the on-disk inode size (128 vs 256 bytes) and the
+	// block-pointer width (32-bit vs 64-bit) used by the read paths.
+	IsUFS1 bool
+}
+
+// dinodeSize returns the on-disk inode size in bytes for this
+// filesystem: 128 for UFS1, 256 for UFS2. The read paths use this to
+// locate inodes within the inode table.
+func (sb *Superblock) dinodeSize() int64 {
+	if sb.IsUFS1 {
+		return UFS1InodeSize
+	}
+	return InodeSize
+}
+
+// pointerSize returns the width in bytes of an on-disk block pointer
+// (daddr_t): 4 for UFS1, 8 for UFS2. It governs how indirect-block
+// entries are decoded.
+func (sb *Superblock) pointerSize() int64 {
+	if sb.IsUFS1 {
+		return 4
+	}
+	return 8
 }
 
 // ReadSuperblock pulls the primary UFS2 superblock off the backing
@@ -156,15 +191,32 @@ type Superblock struct {
 // on any failure so callers can distinguish "not a UFS2 image" from a
 // generic I/O error.
 func ReadSuperblock(rs io.ReaderAt) (*Superblock, error) {
+	// Try the UFS2 location first (the common case for modern images),
+	// then fall back to the UFS1 location. We only fall back on a
+	// magic mismatch — a real I/O error at the UFS2 offset is reported
+	// as-is so callers can tell "wrong format" from "broken device".
 	buf := make([]byte, SblockSize)
 	if _, err := rs.ReadAt(buf, SblockUFS2); err != nil {
 		return nil, fmt.Errorf("ufs: read superblock at %d: %w", SblockUFS2, err)
 	}
-	sb, err := parseSuperblock(buf)
-	if err != nil {
-		return nil, err
+	if magicOf(buf) == MagicUFS2 {
+		return parseSuperblock(buf)
 	}
-	return sb, nil
+
+	// Not a UFS2 superblock at the UFS2 offset; try UFS1.
+	if _, err := rs.ReadAt(buf, SblockUFS1); err != nil {
+		return nil, fmt.Errorf("ufs: read superblock at %d: %w", SblockUFS1, err)
+	}
+	return parseSuperblock(buf)
+}
+
+// magicOf returns the fs_magic word from a superblock buffer, or 0 if
+// the buffer is too short to contain it.
+func magicOf(buf []byte) uint32 {
+	if len(buf) < offMagic+4 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(buf[offMagic:])
 }
 
 // parseSuperblock decodes the on-disk struct fs out of an
@@ -198,6 +250,7 @@ func parseSuperblock(buf []byte) (*Superblock, error) {
 		Maxfilesize:   le.Uint64(buf[offMaxfilesize:]),
 		Magic:         le.Uint32(buf[offMagic:]),
 	}
+	sb.IsUFS1 = sb.Magic == MagicUFS1
 	if err := sb.validate(); err != nil {
 		return nil, err
 	}
@@ -211,10 +264,8 @@ func parseSuperblock(buf []byte) (*Superblock, error) {
 // images early.
 func (sb *Superblock) validate() error {
 	switch sb.Magic {
-	case MagicUFS2:
-		// fall through
-	case MagicUFS1:
-		return fmt.Errorf("%w: UFS1 not supported (magic 0x%x)", ErrBadSuperblock, sb.Magic)
+	case MagicUFS2, MagicUFS1:
+		// both on-disk formats are read-supported
 	default:
 		return fmt.Errorf("%w: bad magic 0x%x", ErrBadSuperblock, sb.Magic)
 	}
@@ -230,7 +281,7 @@ func (sb *Superblock) validate() error {
 	if sb.Frag <= 0 || int32(sb.Bsize/sb.Fsize) != sb.Frag {
 		return fmt.Errorf("%w: frag %d inconsistent with bsize/fsize", ErrBadSuperblock, sb.Frag)
 	}
-	if sb.Inopb == 0 || sb.Inopb != uint32(sb.Bsize)/InodeSize {
+	if sb.Inopb == 0 || sb.Inopb != uint32(sb.Bsize)/uint32(sb.dinodeSize()) {
 		return fmt.Errorf("%w: inopb %d inconsistent with bsize", ErrBadSuperblock, sb.Inopb)
 	}
 	if sb.Ncg == 0 {
@@ -260,7 +311,7 @@ func (sb *Superblock) InodeOffset(ino uint64) int64 {
 	idx := uint32(ino % uint64(sb.Ipg))
 	cgBase := sb.CgBase(cg)
 	inodeTable := cgBase + int64(sb.Iblkno)*int64(sb.Fsize)
-	return inodeTable + int64(idx)*int64(InodeSize)
+	return inodeTable + int64(idx)*sb.dinodeSize()
 }
 
 // FragOffset returns the absolute byte offset of fragment `frag`

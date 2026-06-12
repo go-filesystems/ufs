@@ -114,15 +114,20 @@ func blockForLBN(rs io.ReaderAt, sb *Superblock, in *Inode, lbn int64) (uint64, 
 }
 
 // readIndirectEntry reads one fragment address from the indirect
-// block at `frag`. Each entry is a little-endian uint64.
+// block at `frag`. Each entry is a little-endian daddr_t: 8 bytes on
+// UFS2, 4 bytes on UFS1.
 func readIndirectEntry(rs io.ReaderAt, sb *Superblock, frag uint64, idx int64) (uint64, error) {
 	if idx < 0 || idx >= int64(sb.Nindir) {
 		return 0, fmt.Errorf("ufs: indirect index %d out of range [0,%d)", idx, sb.Nindir)
 	}
+	ptr := sb.pointerSize()
 	var buf [8]byte
-	off := sb.FragOffset(frag) + idx*8
-	if _, err := rs.ReadAt(buf[:], off); err != nil {
+	off := sb.FragOffset(frag) + idx*ptr
+	if _, err := rs.ReadAt(buf[:ptr], off); err != nil {
 		return 0, fmt.Errorf("ufs: read indirect entry at %d: %w", off, err)
+	}
+	if sb.IsUFS1 {
+		return uint64(binary.LittleEndian.Uint32(buf[:4])), nil
 	}
 	return binary.LittleEndian.Uint64(buf[:]), nil
 }

@@ -1,9 +1,11 @@
 // Copyright (c) 2026, go-filesystems
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package ufs is a pure-Go read-only driver for the FreeBSD UFS2 on-disk
-// format. Sprint 2A targets the surface that the FreeBSD loader.efi
-// needs to read a kernel + modules off a UFS2 root partition; write
+// Package ufs is a pure-Go driver for the FreeBSD UFS on-disk format.
+// It reads both UFS2 and UFS1 images (the latter with 128-byte dinodes
+// and 32-bit block pointers); the write/Mkfs surface targets UFS2 only.
+// Sprint 2A targets the surface that the FreeBSD loader.efi needs to
+// read a kernel + modules off a UFS root partition; unsupported write
 // operations from the filesystem.Filesystem interface are stubbed out
 // with ErrReadOnly.
 package ufs

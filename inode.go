@@ -46,6 +46,27 @@ const (
 	inoShortlinkLen = (NumDirect + NumIndirect) * 8
 )
 
+// Inode field offsets within the 128-byte ufs1_dinode. Mirrored from
+// struct ufs1_dinode in sys/ufs/ufs/dinode.h. UFS1 keeps di_size as a
+// 64-bit field but uses 32-bit (ufs1_daddr_t) block pointers and a
+// 32-bit di_blocks, and stores uid/gid near the end of the inode.
+const (
+	ino1OffMode      = 0
+	ino1OffNlink     = 2
+	ino1OffSize      = 8  // u_int64_t di_size
+	ino1OffDirect    = 40 // int32_t di_db[12]
+	ino1OffIndirect  = 88 // int32_t di_ib[3]
+	ino1OffFlags     = 100
+	ino1OffBlocks    = 104 // int32_t di_blocks
+	ino1OffUID       = 112
+	ino1OffGID       = 116
+	ino1OffShortlink = ino1OffDirect
+	// ino1ShortlinkLen is the size of the di_db[]+di_ib[] area that
+	// holds an inline ("fast") symlink target on UFS1: 15 32-bit
+	// pointers = 60 bytes.
+	ino1ShortlinkLen = (NumDirect + NumIndirect) * 4
+)
+
 // Inode mirrors the fields of struct ufs2_dinode that the read-only
 // driver consults. We carry the raw 256 bytes alongside the decoded
 // view so callers that need the inline shortlink can reach for it
@@ -78,10 +99,17 @@ type Inode struct {
 	// double, triple.
 	Indirect [NumIndirect]uint64
 
-	// Raw is the full 256-byte on-disk inode image, useful for
-	// callers that need to peek at fields we don't decode (e.g.
-	// the embedded shortlink target at offset 112).
+	// Raw is the full on-disk inode image, useful for callers that
+	// need to peek at fields we don't decode (e.g. the embedded
+	// shortlink target). For UFS2 the whole 256 bytes are populated;
+	// for UFS1 only the first 128 bytes carry meaningful data.
 	Raw [InodeSize]byte
+
+	// isUFS1 records the on-disk format this inode was decoded from.
+	// It controls the inline-symlink offset/length and is mirrored
+	// from the superblock at parse time so helper methods on Inode
+	// (e.g. Shortlink) stay self-contained.
+	isUFS1 bool
 }
 
 // ReadInode pulls one inode out of the on-disk inode table using the
@@ -93,19 +121,53 @@ func ReadInode(rs io.ReaderAt, sb *Superblock, ino uint64) (*Inode, error) {
 	}
 	off := sb.InodeOffset(ino)
 	var buf [InodeSize]byte
-	if _, err := rs.ReadAt(buf[:], off); err != nil {
+	n := sb.dinodeSize()
+	if _, err := rs.ReadAt(buf[:n], off); err != nil {
 		return nil, fmt.Errorf("ufs: read inode %d at %d: %w", ino, off, err)
 	}
-	return parseInode(buf[:])
+	return parseInodeFmt(buf[:n], sb.IsUFS1)
 }
 
-// parseInode decodes the on-disk dinode in `buf`. The buffer length
-// is checked so a short read doesn't panic the decoder.
+// parseInode decodes a UFS2 on-disk dinode in `buf`. The buffer length
+// is checked so a short read doesn't panic the decoder. It is kept as
+// a thin wrapper around parseInodeFmt for the UFS2 case.
 func parseInode(buf []byte) (*Inode, error) {
+	return parseInodeFmt(buf, false)
+}
+
+// parseInodeFmt decodes an on-disk dinode in `buf`. When isUFS1 is set
+// the buffer is interpreted as a 128-byte struct ufs1_dinode with
+// 32-bit block pointers; otherwise as a 256-byte struct ufs2_dinode
+// with 64-bit pointers.
+func parseInodeFmt(buf []byte, isUFS1 bool) (*Inode, error) {
+	le := binary.LittleEndian
+	if isUFS1 {
+		if len(buf) < UFS1InodeSize {
+			return nil, fmt.Errorf("ufs: short ufs1 inode buffer %d < %d", len(buf), UFS1InodeSize)
+		}
+		in := &Inode{
+			Mode:   le.Uint16(buf[ino1OffMode:]),
+			Nlink:  le.Uint16(buf[ino1OffNlink:]),
+			UID:    le.Uint32(buf[ino1OffUID:]),
+			GID:    le.Uint32(buf[ino1OffGID:]),
+			Size:   le.Uint64(buf[ino1OffSize:]),
+			Blocks: uint64(le.Uint32(buf[ino1OffBlocks:])),
+			Flags:  le.Uint32(buf[ino1OffFlags:]),
+			isUFS1: true,
+		}
+		for i := 0; i < NumDirect; i++ {
+			in.Direct[i] = uint64(le.Uint32(buf[ino1OffDirect+i*4:]))
+		}
+		for i := 0; i < NumIndirect; i++ {
+			in.Indirect[i] = uint64(le.Uint32(buf[ino1OffIndirect+i*4:]))
+		}
+		copy(in.Raw[:UFS1InodeSize], buf[:UFS1InodeSize])
+		return in, nil
+	}
+
 	if len(buf) < InodeSize {
 		return nil, fmt.Errorf("ufs: short inode buffer %d < %d", len(buf), InodeSize)
 	}
-	le := binary.LittleEndian
 	in := &Inode{
 		Mode:    le.Uint16(buf[inoOffMode:]),
 		Nlink:   le.Uint16(buf[inoOffNlink:]),
@@ -157,7 +219,15 @@ func (in *Inode) Shortlink(sb *Superblock) (string, bool) {
 		// it through the block reader.
 		return "", false
 	}
-	if in.Size == 0 || in.Size > uint64(inoShortlinkLen) {
+	// The inline-target area lives in the di_db[]+di_ib[] block
+	// pointers, whose offset and length depend on the on-disk format
+	// (60 bytes at offset 40 for UFS1, 120 bytes at offset 112 for
+	// UFS2).
+	off, maxLen := inoOffShortlink, inoShortlinkLen
+	if in.isUFS1 {
+		off, maxLen = ino1OffShortlink, ino1ShortlinkLen
+	}
+	if in.Size == 0 || in.Size > uint64(maxLen) {
 		return "", false
 	}
 	// Defensive: also obey the superblock's own maxsymlinklen if it
@@ -165,5 +235,5 @@ func (in *Inode) Shortlink(sb *Superblock) (string, bool) {
 	if sb.Maxsymlinklen > 0 && in.Size > uint64(sb.Maxsymlinklen) {
 		return "", false
 	}
-	return string(in.Raw[inoOffShortlink : inoOffShortlink+int(in.Size)]), true
+	return string(in.Raw[off : off+int(in.Size)]), true
 }
