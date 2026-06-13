@@ -7,6 +7,12 @@
 Pure-Go driver for the FreeBSD UFS2 on-disk format. Reads and writes
 both supported, with `Mkfs` to format a fresh image from scratch.
 
+UFS is the FreeBSD name for the **Berkeley Fast File System (FFS)**; the
+on-disk format is shared across the BSDs (FFSv1 = UFS1, FFSv2 = UFS2). This
+driver therefore also reads **NetBSD / OpenBSD FFS** images — verified by
+`TestInterop_MakefsFFS`, which builds FFSv1 and FFSv2 images with NetBSD's
+`makefs` and reads them back.
+
 ## Status
 
 Through sprint 2D: read + write + `Mkfs` + double-indirect on top of
