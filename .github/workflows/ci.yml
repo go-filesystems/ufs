@@ -11,19 +11,40 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: lint + build + test
-    runs-on: ubuntu-latest
+  # Native runners: full lint + build + test (race + coverage) via the
+  # Taskfile, exactly as a developer runs it locally.
+  native:
+    name: native ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     steps:
-      - name: Checkout
+      - name: Checkout ufs
         uses: actions/checkout@v4
+        with:
+          path: ufs
+
+      # go.mod carries `replace github.com/go-filesystems/interface =>
+      # ../interface`, so the sibling module must sit next to this one.
+      - name: Checkout interface (sibling replace target)
+        uses: actions/checkout@v4
+        with:
+          repository: go-filesystems/interface
+          path: interface
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: stable
           check-latest: true
           cache: true
+          cache-dependency-path: ufs/go.mod
 
       - name: Install Task
         uses: arduino/setup-task@v2
@@ -32,12 +53,104 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Taskfile ci
+        working-directory: ufs
         run: task ci
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage
-          path: cover.out
+          name: coverage-${{ matrix.arch }}
+          path: ufs/cover.out
           if-no-files-found: ignore
+
+  # Emulated runners: cross-compile a static (CGO_ENABLED=0) test binary
+  # per package and run it under QEMU for each non-native 64-bit arch.
+  # s390x is big-endian, which exercises the UFS byte-order handling: the
+  # on-disk superblock / inode / indirect-block decoders all use explicit
+  # binary.LittleEndian, so reads stay host-endianness-independent.
+  emulated:
+    name: emulated ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            image: debian:trixie
+            qemu: rv64,v=true,vlen=128
+          - arch: loong64
+            image: ghcr.io/loong64/debian:trixie
+            qemu: la464
+          - arch: ppc64le
+            image: debian:trixie
+            qemu: power9
+          - arch: s390x
+            image: debian:trixie
+            qemu: qemu
+    steps:
+      - name: Checkout ufs
+        uses: actions/checkout@v4
+        with:
+          path: ufs
+
+      - name: Checkout interface (sibling replace target)
+        uses: actions/checkout@v4
+        with:
+          repository: go-filesystems/interface
+          path: interface
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+          cache-dependency-path: ufs/go.mod
+
+      - name: Register QEMU binfmt handlers
+        run: docker run --rm --privileged tonistiigi/binfmt --install all
+
+      - name: Cross-compile per-package test binaries
+        working-directory: ufs
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tests
+          for pkg in $(go list ./...); do
+            name=$(echo "$pkg" | tr '/' '_')
+            # Skip packages without test files (go test -c emits no binary).
+            go test -c -cover -o "/tmp/tests/${name}.test" "$pkg"
+            if [ -f "/tmp/tests/${name}.test" ]; then
+              echo "built ${name}.test"
+            fi
+          done
+          ls -la /tmp/tests
+
+      - name: Run test binaries under QEMU (${{ matrix.arch }})
+        env:
+          QEMU_CPU: ${{ matrix.qemu }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=(/tmp/tests/*.test)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no test binaries to run"; exit 0
+          fi
+          rc=0
+          for bin in "${bins[@]}"; do
+            echo "::group::$(basename "$bin")"
+            if ! docker run --rm \
+              --platform linux/${{ matrix.arch }} \
+              -e QEMU_CPU="${QEMU_CPU}" \
+              -v /tmp/tests:/t -w /t \
+              ${{ matrix.image }} \
+              "./$(basename "$bin")" -test.v; then
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $rc
