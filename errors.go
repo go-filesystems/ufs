@@ -35,10 +35,12 @@ var (
 	// fs_inodefmt, or numeric fields outside their sane ranges).
 	ErrBadSuperblock = errors.New("ufs: superblock validation failed")
 
-	// ErrUnsupportedIndirect is returned when a read would traverse a
-	// double- or triple-indirect block. Sprint 2A handles direct
-	// blocks and a single level of indirection only.
-	ErrUnsupportedIndirect = errors.New("ufs: double/triple indirect blocks not supported")
+	// ErrUnsupportedIndirect is returned when a read maps to an LBN
+	// beyond the triple-indirect tier (i.e. beyond any addressing the
+	// UFS on-disk format provides). Direct and single/double/triple
+	// indirect reads are all supported. The write path still rejects
+	// triple-indirect allocation with ErrFileTooLarge.
+	ErrUnsupportedIndirect = errors.New("ufs: indirect block beyond triple-indirect reach not supported")
 
 	// ErrNotDirectory is returned when ListDir is called on an inode
 	// that is not a directory.

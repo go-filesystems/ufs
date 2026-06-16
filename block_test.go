@@ -120,18 +120,17 @@ func TestReadFileBody_SparseHole(t *testing.T) {
 	}
 }
 
-func TestReadFileBody_TripleIndirectUnsupported(t *testing.T) {
-	// Sprint 2D: single + double-indirect are now supported. Only the
-	// triple-indirect tier (nindir³ × bsize) remains intentionally
-	// unimplemented. We call blockForLBN directly with a high LBN to
-	// exercise the triple-indirect branch without driving a multi-GiB
-	// read through the byte slice.
+func TestReadFileBody_BeyondTripleIndirect(t *testing.T) {
+	// Direct + single + double + triple-indirect are all supported.
+	// Only an LBN past the triple-indirect tier (nindir³ × bsize),
+	// which cannot occur in a valid filesystem, is rejected. We call
+	// blockForLBN directly with such an LBN to exercise the final
+	// guard without driving a petabyte-scale read.
 	img := buildFixture()
 	sb, _ := parseSuperblock(img[SblockUFS2 : SblockUFS2+1376])
 	in := &Inode{Mode: IFREG | 0o644}
-	in.Indirect[2] = uint64(fragBigIndirect) // pretend triple-indirect
-	highLBN := int64(NumDirect + fxNindir + fxNindir*fxNindir + 1)
-	_, err := blockForLBN(bytes.NewReader(img), sb, in, highLBN)
+	beyondLBN := int64(NumDirect + fxNindir + fxNindir*fxNindir + fxNindir*fxNindir*fxNindir)
+	_, err := blockForLBN(bytes.NewReader(img), sb, in, beyondLBN)
 	if !errors.Is(err, ErrUnsupportedIndirect) {
 		t.Fatalf("err = %v, want ErrUnsupportedIndirect", err)
 	}
