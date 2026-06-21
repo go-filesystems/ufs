@@ -11,8 +11,11 @@ import (
 
 // ReadFileBody reads up to `n` bytes starting at `off` from the file
 // described by `in`. It honours the UFS2 layout — direct fragments
-// for the first 12 logical blocks, single-indirect for the next
-// fs_nindir, and ErrUnsupportedIndirect for anything beyond that.
+// for the first 12 logical blocks, then single-, double-, and
+// triple-indirect for the next fs_nindir, fs_nindir², and fs_nindir³
+// logical blocks respectively. An LBN beyond triple-indirect reach
+// (which cannot occur in a valid filesystem) yields
+// ErrUnsupportedIndirect.
 //
 // The function caps `n` at di_size − off so callers never observe
 // trailing slack from the underlying fragment.
@@ -108,8 +111,36 @@ func blockForLBN(rs io.ReaderAt, sb *Superblock, in *Inode, lbn int64) (uint64, 
 		}
 		return readIndirectEntry(rs, sb, mid, innerIdx)
 	}
-	// Triple-indirect intentionally not implemented: nindir³ × bsize
-	// = 1 PiB at bsize=32768; sprint 2D doesn't need it.
+	rel -= nindir * nindir
+	// Triple-indirect: in.Indirect[2] points at a block of nindir
+	// uint64 pointers, each pointing at a double-indirect block of
+	// nindir pointers, each pointing at a single-indirect block of
+	// nindir entries. Total reach = nindir³ × bsize.
+	if rel < nindir*nindir*nindir {
+		if in.Indirect[2] == 0 {
+			return 0, nil
+		}
+		topIdx := rel / (nindir * nindir)
+		midIdx := (rel / nindir) % nindir
+		innerIdx := rel % nindir
+		mid, err := readIndirectEntry(rs, sb, in.Indirect[2], topIdx)
+		if err != nil {
+			return 0, err
+		}
+		if mid == 0 {
+			return 0, nil
+		}
+		inner, err := readIndirectEntry(rs, sb, mid, midIdx)
+		if err != nil {
+			return 0, err
+		}
+		if inner == 0 {
+			return 0, nil
+		}
+		return readIndirectEntry(rs, sb, inner, innerIdx)
+	}
+	// Beyond triple-indirect there is no further addressing tier in
+	// UFS; such an LBN cannot exist in a valid filesystem.
 	return 0, ErrUnsupportedIndirect
 }
 
