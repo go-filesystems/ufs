@@ -55,13 +55,21 @@ func TestReadFileBody_TripleIndirect(t *testing.T) {
 	le := binary.LittleEndian
 
 	// Minimal but valid UFS2 superblock — same geometry as the shared
-	// fixture so parseSuperblock accepts it.
+	// fixture so parseSuperblock accepts it, except Ncg is advertised
+	// large enough that the image-derived size bound (Ncg*Fpg*Fsize) can
+	// hold this file's multi-gigabyte *logical* size. The file is sparse
+	// (only a handful of fragments are materialised in `img`), but di_size
+	// must not exceed the addressable image size — the same invariant the
+	// hardened allocation guard enforces against a crafted oversized
+	// di_size. fxNcg=1 would advertise only a 1 MiB image, so we pick a
+	// cylinder-group count whose Ncg*Fpg*Fsize comfortably exceeds di_size.
+	const tiNcg = 4096 // 4096*256*4096 = 4 GiB >= ~2.15 GiB di_size
 	sb := img[SblockUFS2 : SblockUFS2+1376]
 	le.PutUint32(sb[offSblkno:], fxSblkno)
 	le.PutUint32(sb[offCblkno:], fxCblkno)
 	le.PutUint32(sb[offIblkno:], fxIblkno)
 	le.PutUint32(sb[offDblkno:], fxDblkno)
-	le.PutUint32(sb[offNcg:], fxNcg)
+	le.PutUint32(sb[offNcg:], tiNcg)
 	le.PutUint32(sb[offBsize:], bsize)
 	le.PutUint32(sb[offFsize:], fsize)
 	le.PutUint32(sb[offFrag:], fxFrag)

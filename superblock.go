@@ -60,27 +60,27 @@ const (
 // 8 so the fs_ocsp[NOCSPTRS] padding sums to 120 bytes). The struct
 // is asserted to be 1376 bytes long by FreeBSD's CTASSERT.
 const (
-	offSblkno         = 8
-	offCblkno         = 12
-	offIblkno         = 16
-	offDblkno         = 20
-	offNcg            = 44
-	offBsize          = 48
-	offFsize          = 52
-	offFrag           = 56
-	offBshift         = 80
-	offFshift         = 84
-	offFsbtodb        = 100
-	offSbsize         = 104
-	offNindir         = 116
-	offInopb          = 120
-	offIpg            = 184
-	offFpg            = 188
-	offFlags          = 1312
-	offMaxsymlinklen  = 1320
-	offOldInodefmt    = 1324
-	offMaxfilesize    = 1328
-	offMagic          = 1372
+	offSblkno        = 8
+	offCblkno        = 12
+	offIblkno        = 16
+	offDblkno        = 20
+	offNcg           = 44
+	offBsize         = 48
+	offFsize         = 52
+	offFrag          = 56
+	offBshift        = 80
+	offFshift        = 84
+	offFsbtodb       = 100
+	offSbsize        = 104
+	offNindir        = 116
+	offInopb         = 120
+	offIpg           = 184
+	offFpg           = 188
+	offFlags         = 1312
+	offMaxsymlinklen = 1320
+	offOldInodefmt   = 1324
+	offMaxfilesize   = 1328
+	offMagic         = 1372
 )
 
 // Superblock holds the decoded UFS2 superblock fields needed by the
@@ -290,6 +290,21 @@ func (sb *Superblock) validate() error {
 	if sb.Ipg == 0 {
 		return fmt.Errorf("%w: ipg is zero", ErrBadSuperblock)
 	}
+	// Fpg (fragments per cylinder group) drives every cylinder-group base
+	// offset (CgBase) and the whole-image size bound (ImageBytes). A
+	// non-positive value yields nonsensical offset math; an enormous one
+	// would overflow int64 when multiplied by Ncg and Fsize. Reject both,
+	// and require Ncg*Fpg*Fsize to be representable in int64 so downstream
+	// offset/ceiling arithmetic cannot wrap.
+	if sb.Fpg <= 0 {
+		return fmt.Errorf("%w: fpg %d invalid", ErrBadSuperblock, sb.Fpg)
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	fpb := int64(sb.Fpg) * int64(sb.Fsize) // fits: Fpg,Fsize are int32
+	if int64(sb.Ncg) > maxInt64/fpb {
+		return fmt.Errorf("%w: image geometry ncg=%d*fpg=%d*fsize=%d overflows int64",
+			ErrBadSuperblock, sb.Ncg, sb.Fpg, sb.Fsize)
+	}
 	if sb.OldInodefmt != 2 {
 		return fmt.Errorf("%w: unsupported inode format %d", ErrBadSuperblock, sb.OldInodefmt)
 	}
@@ -302,6 +317,31 @@ func (sb *Superblock) validate() error {
 // Fsize bytes wide.
 func (sb *Superblock) CgBase(cg uint32) int64 {
 	return int64(cg) * int64(sb.Fpg) * int64(sb.Fsize)
+}
+
+// ImageBytes returns an upper bound on the addressable byte size of the
+// backing image, derived purely from the validated superblock geometry:
+// Ncg cylinder groups × Fpg fragments/group × Fsize bytes/fragment. The
+// fields are all validated (Fpg > 0, the product fits in int64) by
+// validate(), so this never overflows for an accepted superblock. It is
+// used as the ceiling for bounded allocations so a crafted di_size cannot
+// drive a multi-terabyte make([]byte, …) (class A OOM). A file cannot be
+// larger than the image that contains it.
+func (sb *Superblock) ImageBytes() int64 {
+	return int64(sb.Ncg) * int64(sb.Fpg) * int64(sb.Fsize)
+}
+
+// maxFileBytes returns the ceiling for a single file's in-memory image:
+// the smaller of the backing-image size and the superblock's own declared
+// Maxfilesize (when it is set to a sane positive value). Either alone is a
+// sound defense; using the tighter of the two rejects an absurd di_size as
+// early and as cheaply as possible.
+func (sb *Superblock) maxFileBytes() int64 {
+	max := sb.ImageBytes()
+	if mfs := sb.Maxfilesize; mfs > 0 && mfs <= uint64(max) {
+		max = int64(mfs)
+	}
+	return max
 }
 
 // InodeOffset returns the absolute byte offset of inode `ino` (1-based,

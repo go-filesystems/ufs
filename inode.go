@@ -119,6 +119,15 @@ func ReadInode(rs io.ReaderAt, sb *Superblock, ino uint64) (*Inode, error) {
 	if ino == 0 {
 		return nil, fmt.Errorf("ufs: inode 0 is reserved")
 	}
+	// Defense-in-depth: a dirent can name any 32-bit inode number, which
+	// then drives InodeOffset's offset math. A real UFS image holds at
+	// most Ncg*Ipg inodes; anything at or beyond that is corrupt. Reject
+	// it here so a crafted dirent cannot point InodeOffset at a wild
+	// offset (the subsequent ReadAt would error on a short image, but we
+	// would rather not depend on the image being short to be safe).
+	if maxIno := uint64(sb.Ncg) * uint64(sb.Ipg); ino >= maxIno {
+		return nil, fmt.Errorf("ufs: inode %d out of range [1,%d)", ino, maxIno)
+	}
 	off := sb.InodeOffset(ino)
 	var buf [InodeSize]byte
 	n := sb.dinodeSize()

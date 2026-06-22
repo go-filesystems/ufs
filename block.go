@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/go-volumes/safeio"
 )
 
 // ReadFileBody reads up to `n` bytes starting at `off` from the file
@@ -29,7 +31,20 @@ func ReadFileBody(rs io.ReaderAt, sb *Superblock, in *Inode, off int64, n int) (
 	if uint64(off)+uint64(n) > in.Size {
 		n = int(in.Size - uint64(off))
 	}
-	out := make([]byte, n)
+	// Bound the allocation against the backing image. di_size (in.Size) is
+	// an attacker-controlled 64-bit field (inode.go decodes it raw, with no
+	// ceiling), and ReadFileAll passes n = int(in.Size) straight through;
+	// a crafted di_size such as 2^40 would otherwise drive a ~1 TiB
+	// make([]byte, …) here and OOM the host (class A). safeio.MakeBytes
+	// rejects any n past sb.maxFileBytes() — the smaller of the image size
+	// (Ncg*Fpg*Fsize) and the superblock's declared Maxfilesize — with
+	// ErrTooLarge. A file cannot be larger than the image that contains it.
+	// This guards reads for both regular files and directories: every
+	// traversal funnels through here via ReadFileAll.
+	out, err := safeio.MakeBytes(int64(n), sb.maxFileBytes())
+	if err != nil {
+		return nil, err
+	}
 	bsize := int64(sb.Bsize)
 	done := 0
 	for done < n {
