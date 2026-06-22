@@ -1,2 +1,4 @@
+github.com/go-filesystems/interface v0.0.0-20260622072638-0b01d4fb163f h1:5HnRecjgsND+ESeX7EgGNvYL5ofL+bzJTqcvcSGo1BI=
+github.com/go-filesystems/interface v0.0.0-20260622072638-0b01d4fb163f/go.mod h1:9WZHAmuKzDWHFtncQuJ3rJYWnAcgX3VsupSqYITgftE=
 github.com/go-volumes/safeio v0.0.0-20260622072324-7f8eb19f6f8c h1:rOwNQiP0VPnyUcRjiVq9QTOCJkN9heon0325hZdFLaQ=
 github.com/go-volumes/safeio v0.0.0-20260622072324-7f8eb19f6f8c/go.mod h1:QQdGwEUmPSdzD+OPq+ZcKso9ljssqgBXNk0/9z7moho=
