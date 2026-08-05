@@ -36,10 +36,11 @@ Phase 3 to build the in-memory UFS2 partition consumed by FreeBSD's
 
 | Area | Status | Notes |
 |---|---:|---|
-| Superblock decode | yes | Primary superblock at `SBLOCK_UFS2` (65536). UFS1 magic rejected with a clear error. |
-| Inode decode | yes | `ufs2_dinode` (256 bytes) — mode, size, link count, direct/indirect pointers. |
+| Superblock decode | yes | Primary superblock at `SBLOCK_UFS2` (65536), falling back to `SBLOCK_UFS1` (8192). Both UFS1 (`ufs1_dinode`, 128 bytes, 32-bit pointers) and UFS2 are read; the write/`Mkfs` surface targets UFS2 only. |
+| Inode decode | yes | `ufs2_dinode` (256 bytes) / `ufs1_dinode` (128 bytes) — mode, size, link count, direct/indirect pointers. |
 | Directory walk | yes | Variable-length `direct` entries; 4-byte aligned reclen; vacant slot skipping. |
-| File data | yes | Direct (12) + single indirect block traversal. Double / triple indirect return `ErrUnsupportedIndirect`. |
+| File data (read) | yes | Direct (12) + single + double + triple indirect block traversal. `ErrUnsupportedIndirect` only fires beyond triple-indirect reach (i.e. beyond anything the on-disk format can address). |
+| File data (write) | yes | Direct + single + double indirect; triple-indirect allocation is not yet implemented and returns `ErrFileTooLarge` beyond that reach (see `MkfsOptions.BlockSize` below to raise the ceiling). |
 | Sparse holes | yes | Zero block pointer materialises as implicit zero-fill. |
 | Symlinks (inline) | yes | "Fast" symlinks decoded directly from the inode's block-pointer area. |
 | Symlinks (spilled) | yes | Falls back to reading a data block when `di_blocks > 0`. |
@@ -58,8 +59,15 @@ Constructors:
 
 - `Open(rs, size)` — read-only handle.
 - `OpenRW(rs, wa, size)` — read + write on an existing image.
-- `Mkfs(rw, sizeBytes)` — fresh format; returns an `*FS` already
-  open for read+write.
+- `Mkfs(rw, sizeBytes)` — fresh format with sprint-2C-A-compatible
+  defaults (4 KiB block/fragment, one inode per 4 KiB); returns an
+  `*FS` already open for read+write.
+- `MkfsWith(rw, sizeBytes, opts MkfsOptions)` — explicit-geometry form
+  of `Mkfs`. `MkfsOptions{BlockSize, FragmentSize, InodeDensity, Label}`
+  lets a caller dial the block size up to 32 KiB (matching FreeBSD
+  `newfs(8)`) to store files beyond the default single-indirect reach —
+  32 KiB extends single-indirect to 16 MiB and engages double-indirect
+  up to 8 GiB.
 
 Operations are flushed coherently — each individual call leaves the
 on-disk image in a well-formed state (superblock + per-cg counters
@@ -74,12 +82,14 @@ produce on first mount. For our use case (producing a UFS2 boot
 partition in-process from `tamago-uefi`) that is the correct
 trade-off.
 
-### Out of scope (sprint 2C-A)
+### Out of scope (sprint 2C-A / 2D)
 
-- Double / triple indirect blocks. Files larger than ~2 MiB at the
-  default 4 KiB block size return `ErrFileTooLarge`. loader.efi
-  plus a FreeBSD `/boot/kernel` tree fits comfortably below this
-  limit.
+- Triple-indirect block *allocation*. Writing is direct + single +
+  double indirect only; a write needing triple-indirect returns
+  `ErrFileTooLarge`. At the default 4 KiB block size that ceiling is
+  ~2 MiB; at 32 KiB (`MkfsOptions{BlockSize: 32768}`) it's several GiB.
+  Triple-indirect *reading* is supported (a real FreeBSD image with
+  triple-indirect files reads back correctly).
 - Cluster summary updates (`fs_clustersumoff`). These are an
   allocator-locality hint, not a correctness requirement.
 - Extended attributes (`di_extb` / `di_extsize`).
@@ -87,7 +97,8 @@ trade-off.
 
 ### Out of scope (sprint 2A — still applies)
 
-- UFS1 (deferred to sprint 3 if needed for older NetBSD / OpenBSD).
+- UFS1 *write*/`Mkfs` (read is supported — see the on-disk features
+  table above; only the writer targets UFS2 exclusively).
 - Metadata-checksum verification.
 
 ## Module
@@ -150,21 +161,22 @@ _ = fs.WriteFile("/boot/kernel/kernel", kernelBytes, 0o755)
 All errors returned by the driver are wrapped sentinels — compare
 with `errors.Is`:
 
-- `ErrReadOnly` — write-side methods (sprint 2A is read-only).
+- `ErrReadOnly` — write-side method called on a handle opened via
+  `Open` (read-only) rather than `OpenRW`/`Mkfs`/`MkfsWith`.
 - `ErrNotFound` — path component missing.
 - `ErrInvalidPath` — empty or relative path passed in.
-- `ErrBadSuperblock` — magic mismatch, UFS1, or sanity-check
-  failure.
-- `ErrUnsupportedIndirect` — file requires double / triple indirect
-  traversal (deferred).
+- `ErrBadSuperblock` — wrong magic (neither UFS1 nor UFS2) or a
+  sanity-check failure.
+- `ErrUnsupportedIndirect` — file requires traversal beyond
+  triple-indirect (beyond anything the on-disk format addresses).
 - `ErrNotDirectory` / `ErrNotRegular` / `ErrNotSymlink` — type
   mismatch.
 - `ErrTooManyLinks` — symlink chain exceeded 32 hops.
 - `ErrNoSpace` — no free inode or block in any cylinder group.
 - `ErrExists` — write-side target path already exists.
 - `ErrNotEmpty` — `DeleteDir` on a non-empty directory.
-- `ErrFileTooLarge` — file would require double/triple indirect
-  blocks the writer does not implement.
+- `ErrFileTooLarge` — file would require triple-indirect blocks,
+  which the writer does not allocate (reading them back is fine).
 
 ## Tests
 
