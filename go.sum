@@ -2,7 +2,11 @@ github.com/go-filesystems/interface v0.0.0-20260622072638-0b01d4fb163f h1:5HnRec
 github.com/go-filesystems/interface v0.0.0-20260622072638-0b01d4fb163f/go.mod h1:9WZHAmuKzDWHFtncQuJ3rJYWnAcgX3VsupSqYITgftE=
 github.com/go-filesystems/interface v0.2.0 h1:HmQRCkeS+K+q3WkI2WfGYfLV0zsKmCdAKTKWQNZjmAs=
 github.com/go-filesystems/interface v0.2.0/go.mod h1:9MDfHNNKg9cW1qBa3hmURQj4jiWIdTo9Xpgdt8ZzvV8=
+github.com/go-filesystems/interface v0.3.0 h1:cV4+2mvW1eCPyde+KIDRaGuIPAcr2sDgKrxGuGQr98k=
+github.com/go-filesystems/interface v0.3.0/go.mod h1:9MDfHNNKg9cW1qBa3hmURQj4jiWIdTo9Xpgdt8ZzvV8=
 github.com/go-volumes/safeio v0.0.0-20260622072324-7f8eb19f6f8c h1:rOwNQiP0VPnyUcRjiVq9QTOCJkN9heon0325hZdFLaQ=
 github.com/go-volumes/safeio v0.0.0-20260622072324-7f8eb19f6f8c/go.mod h1:QQdGwEUmPSdzD+OPq+ZcKso9ljssqgBXNk0/9z7moho=
 github.com/go-volumes/safeio v0.0.0-20260830080216-c99e29c86f27 h1:EduBaCdy3n6ZuCdgEJeAN0PrVkfiPeTy0GAcb5Ej86Q=
 github.com/go-volumes/safeio v0.0.0-20260830080216-c99e29c86f27/go.mod h1:QQdGwEUmPSdzD+OPq+ZcKso9ljssqgBXNk0/9z7moho=
+github.com/go-volumes/safeio v0.0.0-20260831125406-d8f54b2890d4 h1:RKO58FmZvbvKh6wf+7Y8gohGJ0/2hq4N8L+x2kT9bak=
+github.com/go-volumes/safeio v0.0.0-20260831125406-d8f54b2890d4/go.mod h1:QQdGwEUmPSdzD+OPq+ZcKso9ljssqgBXNk0/9z7moho=
