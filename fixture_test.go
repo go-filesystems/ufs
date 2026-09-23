@@ -40,45 +40,45 @@ import (
 //	inode 11  /big                (regular file > 12 blocks; uses
 //	                              single-indirect)
 const (
-	fxBsize         = 4096
-	fxFsize         = 4096
-	fxFrag          = 1
-	fxInopb         = fxBsize / InodeSize
-	fxIpg           = 32
-	fxFpg           = 256
-	fxNcg           = 1
-	fxSblkno        = SblockUFS2 / fxFsize // 16
-	fxCblkno        = fxSblkno + 2         // 18
-	fxIblkno        = 24
-	fxDblkno        = 26
-	fxFsbtodb       = 3 // 4096 / 512 = 8 → shift 3
-	fxBshift        = 12
-	fxFshift        = 12
-	fxNindir        = fxBsize / 8 // 512 pointers per indirect block
+	fxBsize   = 4096
+	fxFsize   = 4096
+	fxFrag    = 1
+	fxInopb   = fxBsize / InodeSize
+	fxIpg     = 32
+	fxFpg     = 256
+	fxNcg     = 1
+	fxSblkno  = SblockUFS2 / fxFsize // 16
+	fxCblkno  = fxSblkno + 2         // 18
+	fxIblkno  = 24
+	fxDblkno  = 26
+	fxFsbtodb = 3 // 4096 / 512 = 8 → shift 3
+	fxBshift  = 12
+	fxFshift  = 12
+	fxNindir  = fxBsize / 8 // 512 pointers per indirect block
 
 	// inode numbers
-	inoRoot          uint64 = 2
-	inoBoot          uint64 = 3
-	inoLoaderConf    uint64 = 4
-	inoKernelDir     uint64 = 5
-	inoKernelFile    uint64 = 6
-	inoEtc           uint64 = 7
-	inoFstab         uint64 = 8
-	inoRcConfLink    uint64 = 9
-	inoVarLink       uint64 = 10
-	inoBig           uint64 = 11
+	inoRoot       uint64 = 2
+	inoBoot       uint64 = 3
+	inoLoaderConf uint64 = 4
+	inoKernelDir  uint64 = 5
+	inoKernelFile uint64 = 6
+	inoEtc        uint64 = 7
+	inoFstab      uint64 = 8
+	inoRcConfLink uint64 = 9
+	inoVarLink    uint64 = 10
+	inoBig        uint64 = 11
 
 	// data fragment assignments (one fragment per file/dir
 	// payload, indexed from fxDblkno)
-	fragRootDir       = fxDblkno + 0
-	fragBootDir       = fxDblkno + 1
-	fragLoaderConf    = fxDblkno + 2
-	fragKernelDir     = fxDblkno + 3
-	fragKernelFile    = fxDblkno + 4 // 4 blocks → fragments 4..7
-	fragEtcDir        = fxDblkno + 8
-	fragFstab         = fxDblkno + 9
-	fragBigIndirect   = fxDblkno + 10 // indirect block
-	fragBigData       = fxDblkno + 11 // first big-file data block (13 in total)
+	fragRootDir     = fxDblkno + 0
+	fragBootDir     = fxDblkno + 1
+	fragLoaderConf  = fxDblkno + 2
+	fragKernelDir   = fxDblkno + 3
+	fragKernelFile  = fxDblkno + 4 // 4 blocks → fragments 4..7
+	fragEtcDir      = fxDblkno + 8
+	fragFstab       = fxDblkno + 9
+	fragBigIndirect = fxDblkno + 10 // indirect block
+	fragBigData     = fxDblkno + 11 // first big-file data block (13 in total)
 )
 
 // fxLoaderConf and fxFstab are the regular-file payloads we ship in

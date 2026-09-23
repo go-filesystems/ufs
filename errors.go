@@ -10,7 +10,11 @@
 // with ErrReadOnly.
 package ufs
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	iofs "io/fs"
+)
 
 // Sentinel errors returned by the UFS2 driver. Callers should compare
 // with errors.Is rather than == so wrapped errors continue to match.
@@ -23,7 +27,7 @@ var (
 
 	// ErrNotFound is returned when a path component cannot be located
 	// in its parent directory.
-	ErrNotFound = errors.New("ufs: path not found")
+	ErrNotFound = fmt.Errorf("ufs: path not found: %w", iofs.ErrNotExist)
 
 	// ErrInvalidPath is returned when a caller-supplied path is
 	// syntactically invalid (e.g. empty, or containing an inode jump
