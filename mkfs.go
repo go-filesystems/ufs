@@ -12,10 +12,10 @@ import (
 
 // Mkfs defaults (mirror FreeBSD newfs(8)).
 const (
-	defaultBsize        = 4096    // start small so tiny images stay legal
-	defaultFsize        = 4096    // frag == 1 in our default geometry
-	defaultInodeBytes   = 4096    // one inode per 4 KiB of disk
-	defaultCgSize       = 1 << 20 // one cylinder group per 1 MiB
+	defaultBsize         = 4096    // start small so tiny images stay legal
+	defaultFsize         = 4096    // frag == 1 in our default geometry
+	defaultInodeBytes    = 4096    // one inode per 4 KiB of disk
+	defaultCgSize        = 1 << 20 // one cylinder group per 1 MiB
 	defaultMaxsymlinklen = 120
 )
 
@@ -23,39 +23,39 @@ const (
 // validation. Kept here rather than in superblock.go so the reader
 // stays focused on the fields it actually decodes.
 const (
-	sbOffNdir       = 56     // overlaps Frag? No — Frag is at 56; Ndir is 1196.
+	sbOffNdir = 56 // overlaps Frag? No — Frag is at 56; Ndir is 1196.
 	// (Re-using offFrag for write would conflict; the offsets below
 	// are the ones the writer additionally needs.)
-	sbOffMinFree    = 1108
-	sbOffOptim      = 1116
-	sbOffCgsize     = 132
-	sbOffSize       = 1080
-	sbOffDsize      = 1084
-	sbOffNcg        = 44
-	sbOffSpareCon32 = 1284
-	sbOffFmod       = 1300
-	sbOffClean      = 1304
-	sbOffRonly      = 1308
-	sbOffOldFlags   = 1312 // alias of offFlags
-	sbOffFsmnt      = 472
-	sbOffVolname    = 980
-	sbOffSwuid      = 1044
-	sbOffMtime      = 1052
-	sbOffPendingblocks = 1284 // placeholder; real field is at 1316 on amd64
-	sbOffSbcrc      = 1364
-	sbOffSize64     = 1056
-	sbOffDsize64    = 1064
-	sbOffCsaddr     = 1072
-	sbOffCstotalNdir   = 1192
-	sbOffCstotalNbfree = 1196
-	sbOffCstotalNifree = 1200
-	sbOffCstotalNffree = 1204
+	sbOffMinFree            = 1108
+	sbOffOptim              = 1116
+	sbOffCgsize             = 132
+	sbOffSize               = 1080
+	sbOffDsize              = 1084
+	sbOffNcg                = 44
+	sbOffSpareCon32         = 1284
+	sbOffFmod               = 1300
+	sbOffClean              = 1304
+	sbOffRonly              = 1308
+	sbOffOldFlags           = 1312 // alias of offFlags
+	sbOffFsmnt              = 472
+	sbOffVolname            = 980
+	sbOffSwuid              = 1044
+	sbOffMtime              = 1052
+	sbOffPendingblocks      = 1284 // placeholder; real field is at 1316 on amd64
+	sbOffSbcrc              = 1364
+	sbOffSize64             = 1056
+	sbOffDsize64            = 1064
+	sbOffCsaddr             = 1072
+	sbOffCstotalNdir        = 1192
+	sbOffCstotalNbfree      = 1196
+	sbOffCstotalNifree      = 1200
+	sbOffCstotalNffree      = 1204
 	sbOffCstotalNumclusters = 1208
-	sbOffCgrotor    = 132 // alias; cg rotation hint
-	sbOffCpc        = 156 // cylinders per cycle (vestigial)
-	sbOffOldCgmask  = 124
-	sbOffOldNcyl    = 64
-	sbOffOldCpg     = 68
+	sbOffCgrotor            = 132 // alias; cg rotation hint
+	sbOffCpc                = 156 // cylinders per cycle (vestigial)
+	sbOffOldCgmask          = 124
+	sbOffOldNcyl            = 64
+	sbOffOldCpg             = 68
 )
 
 // MkfsOptions controls the geometry of a freshly-minted UFS2
@@ -329,9 +329,10 @@ func log2(x uint32) int {
 
 // makeCgHeader builds the initial cylinder-group header buffer for cg.
 // We lay out:
-//   bytes [0 .. cgOffIusedoff)            — header struct
-//   bytes [iusedoff .. iusedoff + ipg/8)   — inode bitmap (all free)
-//   bytes [freeoff .. freeoff + fpg/8)     — block bitmap (set later)
+//
+//	bytes [0 .. cgOffIusedoff)            — header struct
+//	bytes [iusedoff .. iusedoff + ipg/8)   — inode bitmap (all free)
+//	bytes [freeoff .. freeoff + fpg/8)     — block bitmap (set later)
 func makeCgHeader(sb *Superblock, cg uint32) []byte {
 	buf := make([]byte, sb.Bsize)
 	le := binary.LittleEndian
@@ -341,14 +342,14 @@ func makeCgHeader(sb *Superblock, cg uint32) []byte {
 	le.PutUint32(buf[cgOffNiblk:], sb.Ipg)
 	// cs counters: nifree starts at Ipg (all free), nbfree at the
 	// number of WHOLE data blocks available, nffree at 0, ndir at 0.
-	le.PutUint32(buf[cgOffCs+0:], 0)            // ndir
+	le.PutUint32(buf[cgOffCs+0:], 0) // ndir
 	dataFrags := sb.Fpg - sb.Dblkno
 	dataBlocks := dataFrags / sb.Frag
 	le.PutUint32(buf[cgOffCs+4:], uint32(dataBlocks)) // nbfree
 	le.PutUint32(buf[cgOffCs+8:], sb.Ipg)             // nifree
 	le.PutUint32(buf[cgOffCs+12:], 0)                 // nffree
 	// Bitmap offsets — pack them right after the header.
-	iusedoff := uint32(cgOffTime + 16 + 64)   // leave some room for sparecon
+	iusedoff := uint32(cgOffTime + 16 + 64) // leave some room for sparecon
 	ibmBytes := (sb.Ipg + 7) / 8
 	freeoff := iusedoff + ibmBytes
 	le.PutUint32(buf[cgOffIusedoff:], iusedoff)

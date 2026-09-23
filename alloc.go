@@ -14,27 +14,27 @@ import (
 // pointers and counters the writer actually mutates; everything else
 // stays untouched in the raw image bytes.
 const (
-	cgOffMagic     = 0
-	cgOffOldTime   = 4
-	cgOffCgx       = 8
-	cgOffNdblk     = 16
-	cgOffCs        = 20    // struct csum (ndir/nbfree/nifree/nffree)
-	cgOffRotor     = 36
-	cgOffFrotor    = 40
-	cgOffIrotor    = 44
-	cgOffFrsum     = 48    // int32[MAXFRAG]
-	cgOffIusedoff  = 84    // offset to inode-used bitmap (from start of cg)
-	cgOffFreeoff   = 88    // offset to free-block bitmap (from start of cg)
-	cgOffNextfree  = 92
+	cgOffMagic         = 0
+	cgOffOldTime       = 4
+	cgOffCgx           = 8
+	cgOffNdblk         = 16
+	cgOffCs            = 20 // struct csum (ndir/nbfree/nifree/nffree)
+	cgOffRotor         = 36
+	cgOffFrotor        = 40
+	cgOffIrotor        = 44
+	cgOffFrsum         = 48 // int32[MAXFRAG]
+	cgOffIusedoff      = 84 // offset to inode-used bitmap (from start of cg)
+	cgOffFreeoff       = 88 // offset to free-block bitmap (from start of cg)
+	cgOffNextfree      = 92
 	cgOffClustersumoff = 96
 	cgOffClusteroff    = 100
 	cgOffNclusterblks  = 104
-	cgOffNiblk     = 108
-	cgOffInitediblk = 112
-	cgOffUnrefs     = 116
-	cgOffSparecon32 = 120
-	cgOffCkhash     = 132
-	cgOffTime       = 136
+	cgOffNiblk         = 108
+	cgOffInitediblk    = 112
+	cgOffUnrefs        = 116
+	cgOffSparecon32    = 120
+	cgOffCkhash        = 132
+	cgOffTime          = 136
 	// SparecOn64 etc. follow; we don't need them.
 
 	// CgMagic is the magic constant in a UFS cylinder group header.
