@@ -3,6 +3,6 @@ module github.com/go-filesystems/ufs
 go 1.27.1
 
 require (
-	github.com/go-filesystems/interface v0.3.0
-	github.com/go-volumes/safeio v0.0.0-20260831125406-d8f54b2890d4
+	github.com/go-filesystems/interface v0.4.0
+	github.com/go-volumes/safeio v0.0.0-20261005011856-0ebc4afd6b14
 )
