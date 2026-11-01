@@ -16,6 +16,11 @@ import (
 // for legitimate trees, low enough to surface obvious cycles.
 const maxSymlinkHops = 32
 
+// maxSymlinkTarget bounds the length of a symlink target read from a data
+// block. A target is a path, and MAXPATHLEN is PATH_MAX (FreeBSD sys/sys/param.h);
+// 4096 is the largest PATH_MAX of the systems that write these images.
+const maxSymlinkTarget = 4096
+
 // splitPath canonicalises `p` (collapses //, removes . and trailing
 // /) and returns its slash-separated components. The empty list
 // represents the root directory.
@@ -138,6 +143,11 @@ func readSymlinkTarget(rs io.ReaderAt, sb *Superblock, in *Inode) (string, error
 	}
 	if s, ok := in.Shortlink(sb); ok {
 		return s, nil
+	}
+	// A target is a path. Without this a symlink inode declaring 1 GiB made
+	// ReadFileAll build a gigabyte string to be split by splitPath.
+	if in.Size > maxSymlinkTarget {
+		return "", fmt.Errorf("%w: symlink target of %d bytes exceeds %d", ErrTooLarge, in.Size, maxSymlinkTarget)
 	}
 	data, err := ReadFileAll(rs, sb, in)
 	if err != nil {
