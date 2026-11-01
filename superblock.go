@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/go-volumes/safeio"
 )
 
 // On-disk superblock layout constants. See sys/ufs/ffs/fs.h in the
@@ -163,6 +165,9 @@ type Superblock struct {
 	// It drives the on-disk inode size (128 vs 256 bytes) and the
 	// block-pointer width (32-bit vs 64-bit) used by the read paths.
 	IsUFS1 bool
+
+	// maxRead is the ceiling on one read (0 = DefaultMaxFileBytes).
+	maxRead int64
 }
 
 // dinodeSize returns the on-disk inode size in bytes for this
@@ -281,6 +286,10 @@ func (sb *Superblock) validate() error {
 	if sb.Frag <= 0 || int32(sb.Bsize/sb.Fsize) != sb.Frag {
 		return fmt.Errorf("%w: frag %d inconsistent with bsize/fsize", ErrBadSuperblock, sb.Frag)
 	}
+	// A block holds at most MAXFRAG = 8 fragments (FreeBSD sys/ufs/ffs/fs.h).
+	if sb.Frag > maxFrag {
+		return fmt.Errorf("%w: %d fragments per block exceeds %d", ErrBadSuperblock, sb.Frag, maxFrag)
+	}
 	if sb.Inopb == 0 || sb.Inopb != uint32(sb.Bsize)/uint32(sb.dinodeSize()) {
 		return fmt.Errorf("%w: inopb %d inconsistent with bsize", ErrBadSuperblock, sb.Inopb)
 	}
@@ -310,6 +319,9 @@ func (sb *Superblock) validate() error {
 	}
 	return nil
 }
+
+// maxFrag is MAXFRAG, the most fragments a block can hold.
+const maxFrag = 8
 
 // CgBase returns the byte offset of cylinder-group cg within the
 // backing device. UFS lays out cylinder groups at multiples of
@@ -341,7 +353,39 @@ func (sb *Superblock) maxFileBytes() int64 {
 	if mfs := sb.Maxfilesize; mfs > 0 && mfs <= uint64(max) {
 		max = int64(mfs)
 	}
+	// A sparse file reads back as zeros the image does not hold, and the
+	// geometry above is only what the superblock claims, so the claim is not a
+	// bound on memory: the ceiling is. See SetMaxFileBytes.
+	if lim := sb.readLimit(); max > lim {
+		max = lim
+	}
 	return max
+}
+
+// DefaultMaxFileBytes is the most bytes one ReadFile, ListDir or symlink read
+// will materialise unless SetMaxFileBytes says otherwise.
+const DefaultMaxFileBytes = 1 << 30
+
+// ErrTooLarge is wrapped by the error a read returns when the file it would
+// have to materialise is larger than the ceiling. Test it with errors.Is.
+var ErrTooLarge = safeio.ErrTooLarge
+
+// readLimit is the ceiling in force.
+func (sb *Superblock) readLimit() int64 {
+	if sb.maxRead > 0 {
+		return sb.maxRead
+	}
+	return DefaultMaxFileBytes
+}
+
+// SetMaxFileBytes sets the most bytes one read may materialise; n <= 0 restores
+// DefaultMaxFileBytes. A read over it fails with an error wrapping ErrTooLarge
+// before anything is allocated. It is meant to be set once, right after Open.
+func (fs *FS) SetMaxFileBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	fs.sb.maxRead = n
 }
 
 // InodeOffset returns the absolute byte offset of inode `ino` (1-based,

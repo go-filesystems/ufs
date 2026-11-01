@@ -156,6 +156,27 @@ _ = fs.WriteFile("/boot/loader.conf", []byte("kernel=\"kernel\"\n"), 0o644)
 _ = fs.WriteFile("/boot/kernel/kernel", kernelBytes, 0o755)
 ```
 
+## Untrusted input
+
+An image is attacker-controlled data. Every allocation a value in the image can
+size is bounded before it happens, and a hostile image gets an error, not an
+out-of-memory kill:
+
+- a file is read block by block into a buffer that grows with what was read, so
+  a file whose pointers lead past the image fails on the first missing block
+  without having reserved its declared size;
+- a sparse file legitimately reads back bigger than the image, so a read has a
+  ceiling: `DefaultMaxFileBytes` (1 GiB), lowered with
+  `(*FS).SetMaxFileBytes`. A read over it fails with an error wrapping
+  `ufs.ErrTooLarge`, before anything is allocated;
+- a symlink target is at most 4096 bytes;
+- the cylinder-group headers are loaded one by one, not into a slice sized by
+  `fs_ncg`;
+- a block holds at most 8 fragments (`MAXFRAG`, FreeBSD `ufs/ffs/fs.h`).
+
+`FuzzReadImage` drives the read surface; the regression tests are in
+`bombs_test.go`.
+
 ## Errors
 
 All errors returned by the driver are wrapped sentinels — compare

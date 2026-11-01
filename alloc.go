@@ -66,14 +66,18 @@ type allocator struct {
 // is cheap; for production-sized images with hundreds of groups it
 // reads ~hundreds of KiB at open time.
 func loadAllocator(fs *FS) (*allocator, error) {
-	a := &allocator{fs: fs, cg: make([][]byte, fs.sb.Ncg)}
+	// Ncg is a uint32 off the image: make([][]byte, Ncg) was 96 GiB of slice
+	// headers before the first cylinder group was read. The list grows with
+	// the groups that were actually read, so a short image stops at the first
+	// missing one.
+	a := &allocator{fs: fs}
 	for i := uint32(0); i < fs.sb.Ncg; i++ {
 		buf := make([]byte, fs.sb.Bsize)
 		off := fs.sb.CgBase(i) + int64(fs.sb.Cblkno)*int64(fs.sb.Fsize)
 		if _, err := fs.rs.ReadAt(buf, off); err != nil {
 			return nil, fmt.Errorf("ufs: read cg %d at %d: %w", i, off, err)
 		}
-		a.cg[i] = buf
+		a.cg = append(a.cg, buf)
 	}
 	return a, nil
 }

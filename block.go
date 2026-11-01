@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 
 	"github.com/go-volumes/safeio"
 )
@@ -41,11 +43,19 @@ func ReadFileBody(rs io.ReaderAt, sb *Superblock, in *Inode, off int64, n int) (
 	// ErrTooLarge. A file cannot be larger than the image that contains it.
 	// This guards reads for both regular files and directories: every
 	// traversal funnels through here via ReadFileAll.
-	out, err := safeio.MakeBytes(int64(n), sb.maxFileBytes())
-	if err != nil {
-		return nil, err
+	//
+	// The ceiling is checked first and cheaply, but it is only a ceiling: the
+	// geometry it is derived from is the superblock's own claim, so the buffer
+	// is not made at its full size up front. It grows a block at a time as the
+	// blocks are read, and a file whose pointers lead past the end of the image
+	// fails on the first unreadable block having allocated only what it read.
+	// (A hole in a sparse file grows it by zeros, which is why a ceiling exists.)
+	if int64(n) > sb.maxFileBytes() {
+		return nil, fmt.Errorf("%w: size %d exceeds ceiling %d", safeio.ErrTooLarge, n, sb.maxFileBytes())
 	}
 	bsize := int64(sb.Bsize)
+	out := make([]byte, 0, min(int64(n), 64<<10))
+	var zeros []byte
 	done := 0
 	for done < n {
 		fileOff := off + int64(done)
@@ -61,12 +71,16 @@ func ReadFileBody(rs io.ReaderAt, sb *Superblock, in *Inode, off int64, n int) (
 		}
 		if frag == 0 {
 			// Sparse hole — UFS represents implicit zero-fill
-			// with a zero block pointer. Leave `out[done:]`
-			// alone; it's already zero from make.
+			// with a zero block pointer.
+			if zeros == nil {
+				zeros = make([]byte, bsize)
+			}
+			out = append(out, zeros[:need]...)
 			done += int(need)
 			continue
 		}
 		blkOff := sb.FragOffset(frag) + inBlk
+		out = slices.Grow(out, int(need))[:done+int(need)]
 		if _, err := rs.ReadAt(out[done:done+int(need)], blkOff); err != nil {
 			return nil, fmt.Errorf("ufs: read data at %d: %w", blkOff, err)
 		}
@@ -77,6 +91,10 @@ func ReadFileBody(rs io.ReaderAt, sb *Superblock, in *Inode, off int64, n int) (
 
 // ReadFileAll is a convenience wrapper that reads the entire file.
 func ReadFileAll(rs io.ReaderAt, sb *Superblock, in *Inode) ([]byte, error) {
+	// int(in.Size) wraps on a 32-bit target: 2^32+10 read as a 10-byte file.
+	if in.Size > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("%w: size %d does not fit an int", safeio.ErrTooLarge, in.Size)
+	}
 	return ReadFileBody(rs, sb, in, 0, int(in.Size))
 }
 
