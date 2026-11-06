@@ -136,6 +136,11 @@ func main() {
 }
 ```
 
+`fs.OpenFile(path)` (the `filesystem.Opener` capability) returns a `File` whose
+`ReadAt` reads only the blocks of the range asked for, so a server reads a few
+bytes of a multi-gigabyte file without loading it: a 1 MiB read at 66 MiB of a
+72 MiB file allocates 5.5 MB through it and 423 MB through `ReadFile`.
+
 `Open(rs io.ReaderAt, size int64)` is the lower-level read-only
 constructor when the caller already owns a backing store (e.g. an
 EFI block-IO shim). `OpenRW` adds the writer side; `Mkfs` formats

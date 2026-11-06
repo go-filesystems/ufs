@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `FS.OpenFile` (filesystem.Opener): positional reads of a regular file, one
+  range at a time, through `ReadFileBody`. A server that serves NFS READ or SFTP
+  reads no longer has to load the whole file for each request (go-filesystems/nfs
+  bounds that fallback at 64 MiB since v0.10.0).
+
 - Sprint 2D: explicit-options Mkfs + double-indirect read/write.
   - New `MkfsOptions{BlockSize, FragmentSize, InodeDensity, Label}`
     + `MkfsWith(rw, sizeBytes, opts)` entry point. Zero-valued
